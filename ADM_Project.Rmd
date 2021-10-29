@@ -1,0 +1,852 @@
+---
+title: "ADM_Project"
+author: "Anastasios Vlaikidis"
+date: "5/30/2021"
+output:
+  word_document: default
+  html_document: default
+  pdf_document: default
+---
+
+# Libraries
+```{r,message=F,warning=FALSE}
+#################### For data manipulation ###################
+library(tidyverse)
+
+#################### For graphics ############################
+library(ggplot2)
+library(gmodels)
+library(corrplot)
+library(factoextra)
+library(rpart.plot)
+
+#################### Machine Learning Libraries ##############
+library(caret)
+library(glmnet)
+```
+
+# Load the dataset
+```{r}
+divorce <- read.csv("divorce.csv",sep = ";")
+```
+
+# Sneak peak at our Data
+```{r}
+head(divorce)
+```
+
+```{r}
+tail(divorce)
+```
+
+
+```{r}
+head(divorce[,53:55],n=2)
+```
+
+```{r}
+tail(divorce[,53:55],n=2)
+```
+
+
+# Exploring data by using summary statistics
+## Type of the data
+```{r}
+SLD <- divorce
+# command which reveals how the object's storage is implemented
+cat("How object's storage is implemented:",typeof(SLD),"\n")
+# what kind of object we have
+cat("What kind of object's we have:",class(SLD),"\n")
+# dimension of dataset
+cat("Dimensions of our object",dim(SLD),"\n")
+```
+
+
+## Structure of our data
+```{r}
+str(SLD)
+```
+
+```{r}
+str(SLD[,53:55])
+```
+
+
+## Summary of our data
+```{r}
+summary(SLD)
+```
+
+```{r}
+summary(SLD[,53:55])
+```
+
+
+## Which of our variables are categorical
+```{r}
+outcome <- "Q1821" # random string not the same as colnames
+vars <- setdiff(colnames(SLD), outcome)
+is_categorical <- vapply(SLD[, vars],
+                         function(v) !is.numeric(v),
+                         logical(1))
+
+is_categorical
+```
+
+### Summary of categorical data
+```{r}
+summary(is_categorical)
+```
+
+
+### Count the levels of categorical variables
+```{r echo=FALSE,eval=T}
+nlevels <- vapply(SLD[, is_categorical],
+                  function(v) length(unique(v)),
+                  numeric(1))
+summary(nlevels)
+```
+
+## Number of missing data
+```{r echo=FALSE,eval=TRUE}
+# colSums(is.na(SLD))
+# count the number of missing values in each column
+outcome <- "Q1821" # random string not the same as colnames
+vars    <- setdiff(colnames(SLD), outcome)
+nNAs    <- vapply(SLD[, vars],
+               function(v) sum(is.na(v)),
+               numeric(1))
+nNAs
+summary(nNAs)
+```
+
+## Visualize missing values
+```{r,fig.width=8,fig.height=5}
+visdat::vis_miss(SLD, cluster = T)
+```    
+
+
+
+# Data visualization
+## Target variable distribution
+```{r,fig.height=3.3}
+SLD$Class <- factor(SLD$Class)
+CrossTable(SLD$Class)
+
+common_theme <- theme(plot.title = 
+              element_text(hjust = 0.5, 
+                            face = "bold"))
+
+ggplot(data = SLD, 
+      aes(x = factor(Class), 
+          y = prop.table(stat(count)), 
+       fill = factor(Class),
+      label = scales::percent(prop.table(stat(count)))))+
+                   
+                    xlab(NULL)+
+
+                    ylab("Percentage")+
+  
+        geom_bar(position = "dodge")+ 
+  
+           geom_text(stat = 'count',
+                 position = position_dodge(.9), 
+                    vjust = -0.5, 
+                     size = 3)+
+  
+          scale_x_discrete(labels = c("Married","Divorced"))+
+  
+        scale_y_continuous(labels = scales::percent)+
+       
+        ggtitle("Distribution of Married and Divorced status")+
+        common_theme
+```
+
+
+
+## Crosstables
+```{r}
+for (i in 1:54){
+  print(names(SLD)[i])
+   CrossTable(SLD[,i],
+              SLD$Class, 
+             prop.c = F,
+             format ="SPSS",
+             prop.t = F,
+             digits = 2,
+         prop.chisq = F) 
+}
+```
+
+
+
+## Density plots
+```{r}
+for (i in 1:54){
+print(ggplot(data = SLD,
+            aes(x = SLD[,i],
+              fill= Class))+
+       ylab("count")+
+       xlab(names(SLD)[i])+
+       geom_density(alpha=0.3))
+}
+```
+
+```{r}
+ggplot(data = SLD,
+      aes(x = SLD[,15]))+
+       ylab("count")+
+       xlab(names(SLD)[15])+
+       geom_density(alpha=0.3)
+
+```
+
+
+## Bar plots
+```{r}
+for (i in 1:54){
+print(ggplot(data = SLD,
+            aes(x = SLD[,i],
+              fill= Class))+
+       ylab("count")+
+       xlab(names(SLD)[i])+
+       geom_histogram(bins = 15))
+}
+```
+
+
+## Boxplots
+```{r,fig.height=9,fig.width=10}
+featurePlot(x=SLD[,1:54],y=SLD[,55],plot = "box")
+```
+
+## Scaterplots with jitter
+```{r}
+jittered <- sapply(SLD[,1:54],jitter)
+pairs(jittered[,51:54],col=SLD$Class)
+```
+
+
+# Data spliting
+```{r}
+seed <- 1821
+set.seed(seed)
+ 
+
+idx <-sample(nrow(SLD), 
+             nrow(SLD)*0.75,
+             replace = F)
+
+daTrain <- SLD[idx,]
+daTest  <- SLD[-idx,]
+
+# 
+# idx <- sample(seq(1, 2), 
+#                  size = nrow(SLD), 
+#               replace = TRUE, 
+#                  prob = c(.75, .25))
+
+# daTrain <- SLD[idx == 1,]
+# daTest  <- SLD[idx == 2,]
+```
+
+
+# Correlated Variables
+```{r,fig.width=10,fig.height=9}
+## create correlation matrix
+predictor_variables = setdiff(colnames(daTrain), "Class")
+ correlation_matrix = cor(SLD[ , predictor_variables],
+                         method ="spearman")
+
+## plot correlation
+corrplot(correlation_matrix, 
+         # method = "ellipse", 
+           type = "lower")
+```
+
+
+
+# PCA analysis
+```{r}
+## create pca object using train dataset
+pca = prcomp(daTrain[ ,predictor_variables], scale=TRUE, center=TRUE)
+
+## view pca summary
+summary(pca)
+```
+
+## Save PCA components in a new train set
+```{r}
+## save PC components for train dataset
+train.pc = as.data.frame(pca$x)
+train.pc$Class = daTrain$Class
+head(train.pc)
+```
+
+## Save PCA components for the test set too
+```{r}
+## save PC components for test dataset
+test.pc = predict(pca, newdata = daTest)
+test.pc = as.data.frame(test.pc)
+test.pc$Class = daTest$Class
+```
+
+## Visualize Variance Explained by Principal Components Analysis
+```{r}
+fviz_eig(pca, 
+         addlabels = TRUE, 
+              ylim = c(0,80),
+              geom = c("bar", "line"),
+           barfill = "pink", 
+          barcolor = "grey",
+         linecolor = "red",
+               ncp = 10) +
+labs(title = "Variance Explained By Each Principal Component",
+         x = "Principal Components",  
+         y = "% of Variance")
+```
+
+## Effectiveness of First Principal Components in Separating Out Data Points
+```{r}
+## first and second principal components
+ggplot(train.pc) + 
+geom_point(aes(x = PC1, 
+               y = PC2, 
+           color = Class))
+```
+
+```{r}
+## second and third principal components
+ggplot(train.pc) + 
+geom_point(aes(x = PC2,
+               y = PC3,
+           color = Class))
+```
+
+
+## Biplot of Principal Components
+```{r}
+fviz_pca_biplot(pca, 
+                col.ind = daTrain$Class, 
+                    col = "black",
+                palette = "jco", 
+                   geom = "point",
+                  repel = TRUE,
+           legend.title = "Outcome",
+            addEllipses = TRUE)
+```
+
+
+# Logistic regression with PCA1 component as predictor
+```{r}
+## create model
+fit.glm.PCA1 = glm(formula = Class ~ PC1, 
+                      data = train.pc, 
+                    family = "binomial")
+```
+
+
+## Predictions on train set
+```{r}
+## create prediction probabilities (on train dataset)
+train_probs = predict(fit.glm.PCA1, type="response")
+
+## create predictions (on train dataset)
+train_preds = as.factor(ifelse(train_probs > 0.5, "1", "0"))
+
+## evaluate performance (on train dataset)
+confusionMatrix(train_preds, train.pc$Class)
+```
+
+
+## Predictions on test set
+```{r}
+## create prediction probabilities (on test dataset)
+test_probs = predict(fit.glm.PCA1, 
+                     type = "response", 
+                  newdata = test.pc)
+
+## create predictions (on test dataset)
+test_preds = as.factor(ifelse(test_probs > 0.5, "1", "0"))
+
+## evaluate performance (on test dataset)
+confusionMatrix(test_preds, test.pc$Class)
+```
+
+
+## Summary of glm model with PCA1 as predictor
+```{r}
+summary(fit.glm.PCA1)
+```
+
+
+# Logistic Regression with Original Variables
+```{r}
+fit.glm = glm(formula = Class ~ ., 
+                 data = daTrain, 
+                family = "binomial")
+```
+
+
+## Predictions on train set
+```{r}
+## create prediction probabilities (on train dataset)
+train_probs = predict(fit.glm, type="response")
+
+## create predictions (on train dataset)
+train_preds = as.factor(ifelse(train_probs > 0.5, "1", "0"))
+
+## evaluate performance (on train dataset)
+confusionMatrix(train_preds, daTrain$Class)
+```
+
+
+## Predictions on test set
+```{r}
+## create prediction probabilities (on test dataset)
+test_probs = predict(fit.glm, 
+                     type = "response", 
+                  newdata = daTest)
+
+## create predictions (on test dataset)
+test_preds = as.factor(ifelse(test_probs > 0.5, "1", "0"))
+
+## evaluate performance (on test dataset)
+confusionMatrix(test_preds, daTest$Class)
+```
+
+## Summary of glm model with all original variables as predictors
+```{r}
+summary(fit.glm)
+```
+
+
+# 10 fold-Cross Validation repeated 3 times
+```{r}
+ctrl <- trainControl(method = "repeatedcv",
+                     number = 10,
+                    repeats = 3)
+                  
+
+```
+
+
+# Random Forest model with PCA1 component as predictor
+```{r}
+set.seed(seed)
+metric <- "Accuracy"
+fit.rf.PCA1 <- train(Class~PC1,
+                data = train.pc,
+              method = "rf",
+              metric = metric,
+           trControl = ctrl,
+               ntree = 500)
+```
+
+
+## Random forest results with PCA1 component as predictor on train set
+```{r}
+print(fit.rf.PCA1)
+```
+
+
+## Random Forest predictions with PCA1 component as predictor on test set
+```{r}
+pred <- predict(fit.rf.PCA1,newdata = test.pc,type="raw")
+confusionMatrix(pred,test.pc$Class)
+```
+
+
+# Random Forest model with all original variables as predictors 
+```{r}
+set.seed(seed)
+metric <- "Accuracy"
+fit.rf <- train(Class~.,
+                data = daTrain,
+              method = "rf",
+              metric = metric,
+           trControl = ctrl,
+               ntree = 500,
+          tuneLength = 13)
+```
+
+
+
+## Random forest results with all original variables as predictors on train set 
+```{r}
+print(fit.rf)
+plot(fit.rf)
+```
+
+
+
+## Random Forest predictions with all original variables as predictors on test set
+```{r}
+pred <- predict(fit.rf,newdata = daTest,type="raw")
+confusionMatrix(pred,daTest$Class)
+```
+
+
+# Most important variables for the predictions according to Random Forest Model
+```{r}
+imp <- varImp(fit.rf)
+plot(imp,top = 5)
+```
+
+
+# Testing some more Linear and Non-Linear Algorithms 
+
+Linear: Linear Discriminate Analysis(LDA) 
+
+Non-Linear: k-Nearest Neighbors(KNN), Classification and Regression Trees(CART),Naive Bayes(Naive_Bayes) and Support Vector Machines with Radial Basis Functions(SVM).
+
+All the models will be tested with PCA1 as predictor
+```{r,warning=F}
+seed <- 1821
+set.seed(seed)
+metric <- "Accuracy"
+dat <- train.pc
+
+
+
+# LDA
+fit.lda <- train(Class~PC1,
+                 data = dat,
+               method ="lda",
+               metric = metric,
+            trControl = ctrl,
+                 # preProcess=c("center",
+                 #              "scale",
+                 #              "YeoJohnson"),
+            na.action = na.omit)
+
+
+
+# KNN
+fit.knn <- train(Class~PC1,
+                 data = dat,
+               method = "knn",
+               metric = metric,
+            trControl = ctrl,
+                # preProcess=c("center",
+                #               "scale",
+                #               "YeoJohnson"),
+            na.action = na.omit)
+
+
+# CART
+fit.cart <- train(Class~PC1,
+                  data = dat,
+                method = "rpart",
+                metric = metric,
+             trControl = ctrl,
+                 # preProcess=c("center",
+                 #              "scale",
+                 #              "YeoJohnson"),
+             na.action = na.omit)
+
+
+# Naive Bayes
+fit.nb <- train(Class~PC1,
+                data = dat,
+              method = "nb",
+              metric = metric,
+           trControl = ctrl,
+                 # preProcess=c("center",
+                 #              "scale",
+                 #              "YeoJohnson")
+)
+
+
+# Support Vector Machines with Radial Basis Function Kernel
+fit.svmRadial<- train(Class~PC1,
+                      data = dat,
+                    method = "svmRadial",
+                    metric = metric,
+                 trControl = ctrl,
+                 # preProcess=c("center",
+                 #              "scale",
+                 #              "YeoJohnson"),
+                 na.action = na.omit)
+
+
+# Compare algorithms
+results <- resamples(list(LDA = fit.lda,
+                          KNN = fit.knn,
+                         CART = fit.cart,
+                           NB = fit.nb,
+                          SVM = fit.svmRadial))
+summary(results)
+ #dotplot(results)
+```
+
+
+# Ensemble methods
+Let's look at some boosting and and bagging algorithms.
+
+Bagging: Bagged CART(BAG) and Random Forest(RF)
+
+Boosting: Stochastic Gradient Boosting(GBM) and C5.0(C50)
+```{r,message=F,warning=F}
+set.seed(seed)
+
+# Bagged CART
+fit.treebag<-train(Class~PC1,
+                   data = dat,
+                 method = "treebag",
+                 metric = metric,
+              trControl = ctrl,
+                   # preProcess=c("center",
+                   #            "scale",
+                   #            "YeoJohnson")
+)
+
+# Random Forest
+fit.rf<-train(Class~PC1,
+              data = dat,
+            method = "rf",
+            metric = metric,
+         trControl = ctrl,
+                  # preProcess=c("center",
+                  #             "scale",
+                  #             "YeoJohnson")
+              )
+
+# Stochastic gradient boosting
+fit.gbm<-train(Class~PC1,
+               data = dat,
+             method = "gbm",
+             metric = metric,
+          trControl = ctrl,
+                  # preProcess=c("center",
+                  #             "scale",
+                  #             "YeoJohnson"),
+            verbose = F)
+
+
+# C5.0
+fit.c50<-train(Class~PC1,
+               data = dat,
+             method = "C5.0",
+             metric = metric,
+          trControl = ctrl,
+                  # preProcess=c("center",
+                  #             "scale",
+                  #             "YeoJohnson")
+               )
+
+
+# Compare results
+ensembleResults <- resamples(list(BAG = fit.treebag,
+                                   RF = fit.rf,
+                                  GBM = fit.gbm,
+                                  C50 = fit.c50))
+summary(ensembleResults)
+# dotplot(ensembleResults)
+
+
+
+ensembleResults2 <- resamples(list(BAG = fit.treebag,
+                                   GBM = fit.gbm,
+                                   C50 = fit.c50))
+summary(ensembleResults2)
+#dotplot(ensembleResults2)
+```
+
+
+# Tuning KNN
+The KNN implementation has one parameter that we can tune with caret: k the number of closest instances to collect in order to make a prediction.Let's try all k values between 1 and 20.
+```{r}
+set.seed(seed)
+ grid <- expand.grid(.k=seq(1,20,by =1))
+
+fit.knn <- train(Class~PC1,
+                 data = dat,
+               method = "knn",
+               metric = metric,
+            trControl = ctrl,
+             tuneGrid = grid,
+       # tuneLength = 20,
+           preProcess = c("center",
+                          "scale",
+                          "YeoJohnson"))
+print(fit.knn)
+plot(fit.knn)
+```
+
+
+
+# Tuning NaiveBayes
+```{r}
+set.seed(seed)
+
+fit.nb<- train(Class~PC1,
+                 data = dat,
+               method = "nb",
+               metric = metric,
+            trControl = ctrl,
+           tuneLength = 20,
+           preProcess = c("center",
+                          "scale",
+                          "YeoJohnson"))
+print(fit.nb)
+plot(fit.nb)
+```
+
+
+
+# Tuning SVM
+The SVM implementation has two parameters that we can tune with caret package. The Sigma which is a smoothing term, and C which is a cost constraint.
+```{r}
+set.seed(seed)
+# Support Vector Machines with Radial Basis Function Kernel.
+# The Radial basis function kernel, also called the RBF kernel,
+# or Gaussian kernel.
+
+# grid<- expand.grid(.sigma = c(0.025,0.05,0.1,0.15),
+#                    .C = seq(1,10,by=1))
+
+fit.svmRadial.tuned<- train(Class~PC1,
+                            data = dat, 
+                          method = "svmRadial",
+                          metric = metric,
+                       trControl = ctrl,
+                      preProcess = c("center",
+                                     "scale",
+                                     "YeoJohnson"),
+                      # tuneGrid = grid)
+                      tuneLength = 20)
+
+print(fit.svmRadial.tuned)
+plot(fit.svmRadial.tuned)
+```
+
+
+# Final model for SVM
+```{r}
+fit.svmRadial.tuned$finalModel
+```
+
+
+# Predictions of SVM
+```{r}
+ pred<-predict(fit.svmRadial.tuned, newdata = test.pc,type = "raw")
+ confusionMatrix(pred, test.pc$Class)
+```
+
+
+# XGBoost
+```{r}
+set.seed(seed)
+tune_grid <- expand.grid(nrounds = 300,
+                       max_depth = c(14),
+                             eta = c(0.01),
+                           gamma = 0.01,
+                colsample_bytree = 0.85,
+                min_child_weight = 1,
+                       subsample = 0.5)
+
+fit.xgb <- train(Class~PC1, 
+                 data = dat, 
+               method = "xgbTree",
+            trControl = ctrl,
+             tuneGrid = tune_grid,
+              # tuneLength = 15,
+           preProcess = c("center",
+                          "scale",
+                          "YeoJohnson"))
+print(fit.xgb)
+```
+
+# XGBoost predictions on test set
+```{r}
+ pred<-predict(fit.xgb, newdata = test.pc,type = "raw")
+ confusionMatrix(pred, test.pc$Class)
+```
+
+
+
+# Neural network model
+```{r}
+library(h2o)
+h2oInstance <- h2o.init(ip="localhost")
+set.seed(seed)
+h2oInstance
+```
+
+
+```{r}
+trH <- as.h2o(train.pc,"trH")
+tsH <- as.h2o(test.pc,"tsH")
+```
+
+
+```{r}
+deep.fit <- h2o.deeplearning(
+                             x = 1:length(train.pc)-1,
+                             y = length(train.pc),
+                training_frame = trH,
+                        hidden = c(10,10),
+                        epochs = 50,
+                        nfolds = 2,
+                   standardize = F,
+                   autoencoder = F,
+               mini_batch_size = 4,
+        #  categorical_encoding = c("LabelEncoder"),
+        #      balance_classes = T,
+      # class_sampling_factors = c(2.49,8),
+     #  max_after_balance_size = 5,
+         use_all_factor_levels = T,
+                          seed = seed)
+
+```
+
+
+
+## Predictions
+```{r}
+h2o.confusionMatrix(deep.fit,tsH)
+```
+
+```{r}
+h2o.shutdown(prompt = F)
+```
+
+
+
+# Decision tree
+```{r,warning=FALSE}
+set.seed(seed)
+tree_model <- train(Class~.,
+                    data = daTrain,
+                  method = "rpart",
+               trControl = ctrl,
+              tuneLength = 25)
+
+plot(tree_model)
+```
+
+```{r}
+tree_finalModel <- tree_model$finalModel
+tree_finalModel
+```
+
+# Visualize the tree
+```{r}
+tree_plot <- rpart.plot(tree_finalModel)
+```
+
+
+```{r}
+tree_predictions <- predict(tree_model,newdata = daTest)
+confusionMatrix(tree_predictions, daTest$Class)
+```
+
+
+```{r}
+piiip <- vip::vip(tree_model, 
+               num_features = 10,
+                        bar = F)
+
+piiip
+```
